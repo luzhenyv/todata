@@ -1,0 +1,2 @@
+- **December 1, 2022**: Endgame begins
+- **December 2, 2022**: Endgame done
