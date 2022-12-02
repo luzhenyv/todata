@@ -8,6 +8,7 @@ instance/
 htmlcov/
 dist/
 build/
+upload/
 *.egg-info/
 .idea/
 *.swp
