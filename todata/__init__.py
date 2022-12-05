@@ -48,6 +48,9 @@ def create_app(test_config=None):
     from . import file
     app.register_blueprint(file.bp)
 
+    from . import label
+    app.register_blueprint(label.bp)
+
 
     # a simple page that says hello
     @app.route('/hello')
