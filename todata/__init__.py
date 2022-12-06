@@ -24,9 +24,10 @@ def create_app(test_config=None):
     app.config.from_mapping(
         SECRET_KEY = 'dev',
         DATABASE = os.path.join(app.instance_path, 'todata.sqlite'),
-        UPLOAD_FOLDER = r'D:\PycharmProjects\todata\upload',
+        UPLOAD_FOLDER = r'../upload',
         ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'},
         MAX_CONTENT_LENGTH = 16 * 1000 * 1000, # less than 16MB
+        MODEL_WEIGHT_PATH = r'../weight/best.onnx'
     )
 
     if test_config is None:

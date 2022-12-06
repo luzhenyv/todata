@@ -32,22 +32,29 @@ COLORS = [
 bp = Blueprint('model', __name__, url_prefix='/model')
 
 # TODO: Consider different file inputs
+# TODO: AI model store into USER SESSION
 @bp.route('/predict/<filename>', methods=['POST'])
 def predict(filename):
     filename = secure_filename(filename)
     assert allowed_file(filename), f'File {filename} is illegal Format'
     file_path = Path(current_app.config['UPLOAD_FOLDER']) / filename
+    image = cv2.imread(file_path)  # Read image
+    _image = format_yolov5(image)  # copy original image
 
-    net = build_model(r'./weight/best.onnx')
-    image = cv2.imread(file_path)
-    yolov_image = format_yolov5(image)
+    # Model Predict
+    net = build_model(current_app.config['MODEL_WEIGHT_PATH'])  # import model
     start_time = time.time()
-    predictions = detect(yolov_image, net)
+    predictions = detect(_image, net)
     end_time = time.time()
-    print(f'Time of detecting is {end_time - start_time}')
+    current_app.logger.debug(f'Time of detecting is {end_time - start_time}')
+
+    # Unwrap detection
     class_ids, confidences, boxes = unwrap_detection(
-        yolov_image, predictions[0]
+        _image, predictions[0]
     )
+
+
+
 
 
 
@@ -124,7 +131,7 @@ def unwrap_detection(
     Returns:
         class_ids: a list of object class ID
         confidences: a list of object confidence
-        boxes: a list of object bundling boxes
+        boxes: a list of object bundling boxes, NOT NORMALIZED
     """
     class_ids, confidences, boxes = [], [], []
 
