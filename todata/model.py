@@ -145,13 +145,9 @@ def unwrap_detection(
         if confidence < 0.4:
             continue
 
-        # min_val,max_val,min_indx,max_indx=cv2.minMaxLoc(a)
         _, max_value, _, max_index = cv2.minMaxLoc(row[5:])
         if max_value < 0.25:
             continue
-        # print(f'row is {row}')
-        # print(f'max value is {max_value}')
-        # print(f'max index is {max_index}') # 不知道为什么 max_index 是一个包含两个元素的数组
 
         confidences.append(confidence)
         class_ids.append(max_index[1])
