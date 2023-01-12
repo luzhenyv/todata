@@ -11,7 +11,7 @@ import json
 import hashlib
 import numpy as np
 
-from typing import List
+from typing import List, Tuple
 
 
 class Shape(object):
@@ -78,58 +78,54 @@ class Annotation(object):
         if isinstance(shape, Shape):
             self.shapes.append(shape)
 
+    def to_dict(self):
+        return self.__dict__
+
 def array_to_base64(image: np.ndarray)->str:
     pass
 
+
 def from_yolo_dectection(
         image: np.ndarray,
-        detection: np.ndarray,
-        input_shape: list,
+        config: dict,
+        class_ids: np.ndarray,
+        boxes: np.ndarray,
+        confidences: np.ndarray = None,
         save_data: bool = False,
-        save_confidence: bool = True,
 ) -> Annotation:
     """Convert the yolov5 detections to ToData Annotation Format
 
-        YOLOv5's prediction is an an array with 25,200 positions
-        where each position is a 85-length 1D array. Each 1D array
-        holds the data of one detection. The 4 first positions of
-        this array are the xywh coordinates of the bound box rectangle.
-        The 5th position is the confidence level of that
-        detection. The 6th up to 85th elements are the scores
-        of each class (assuming an 80-class coco dataset )
+    Args:
+        image: the original BGR image
+        config: the project configs
+        class_ids: a list of object class ID
+        boxes: a list of object bundling boxes, NOT NORMALIZED, FORMAT IS XYXYX
+        confidences: a list of object confidence
+        save_data: bool, if true, store base64-format image data
 
-        Args:
-            image: the original BGR image
-            detection: the yolov5 model predictions,
-            input_shape: a list indicating yolo model inputs shape, like [H, W, C,...] excluding batch size
-            save_data: bool, if true, store base64-format image data
-            save_confidence: bool, if true, store the ROI confidence
-
-        Returns:
-            annotation: Annotation, a todata-format annotation
-        """
+    Returns:
+        annotation: Annotation, a todata-format annotation
+    """
+    assert len(class_ids) == len(boxes), "IDs And BOXes have unequal length"
     anno = Annotation(
         image_data = array_to_base64(image) if save_data else None,
         image_md5 = hashlib.md5(image.tobytes()).digest(),
         image_shape = image.shape,
     )
+    CLASSES = config.get('CLASSES')
 
-    height, width, _ = anno.image_shape
-    INPUT_HEIGHT, INPUT_WIDTH = input_shape[:2]
-    x_factor = width / INPUT_WIDTH
-    y_factor = height / INPUT_HEIGHT
+    for index, classid in enumerate(class_ids):
+        box = boxes[index]
+        confidence = None
+        if confidences and len(confidences) == len(classid):
+            confidence = confidences[index]
 
-    for row in detection:
-        confidence = row[4]
-        if confidence < 0.4:
-            continue
-        _, max_value, _, max_index = cv2.minMaxLoc(row[5:])
-        if max_value < 0.25:
-            continue
-
-        x, y, w, h = row[:4]
-
-
-
+        shape = Shape(
+            label = CLASSES[classid],
+            shape_type = 'rectangle',
+            points = [box[:2], box[2:]],
+            flags = {'confidence': confidence} if confidence else None
+        )
+        anno.add_shape(shape)
 
     return anno
