@@ -10,51 +10,78 @@ from typing import Any, Tuple
 from pathlib import Path
 from werkzeug.utils import secure_filename
 
+from .annotation import from_yolo_dectection
 from .file import allowed_file
 
-INPUT_WIDTH = 640
-INPUT_HEIGHT = 640
-SCORE_THRESHOLD = 0.2
-NMS_THRESHOLD = 0.4
-CONFIDENCE_THRESHOLD = 0.4
-CLASSES = ['EOS', 'LYM', 'MAC', 'NEU', 'OTHER']
-COLORS = [
-    (0, 255, 255),
-    (0, 255, 0),
-    (0, 0, 255),
-    (255, 255, 0),
-    (255, 0, 0),
-    (255, 0, 255),
-    (255, 105, 180),
-    (255, 69, 0),
-]
+# TODO Design Project YAML format config
+yolo_config_demo = {
+    'INPUT_SHAPE': [640, 640, 3],
+    'SCORE_THRESHOLD': 0.2,
+    'CONFIDENCE_THRESHOLD': 0.4,
+    'NMS_THRESHOLD': 0.45,
+    'CLASSES': ['EOS', 'LYM', 'MAC', 'NEU', 'OTHER'],
+    'COLORS': [
+        (0, 255, 255),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (255, 0, 0),
+        (255, 0, 255),
+        (255, 105, 180),
+        (255, 69, 0),
+    ],
+    'LINE_THICKNESS': 2,
+}
 
 bp = Blueprint('model', __name__, url_prefix='/model')
 
+
 # TODO: Consider different file inputs
+# TODO: AI model store into USER SESSION
 @bp.route('/predict/<filename>', methods=['POST'])
 def predict(filename):
     filename = secure_filename(filename)
     assert allowed_file(filename), f'File {filename} is illegal Format'
     file_path = Path(current_app.config['UPLOAD_FOLDER']) / filename
+    image = cv2.imread(file_path)  # Read image
+    _image = format_yolov5(image)  # wrap original image
 
-    net = build_model(r'./weight/best.onnx')
-    image = cv2.imread(file_path)
-    yolov_image = format_yolov5(image)
+    # Model Predict
+    net = build_model(current_app.config['MODEL_WEIGHT_PATH'])  # import model
     start_time = time.time()
-    predictions = detect(yolov_image, net)
+    predictions = detect(_image, net, yolo_config_demo)
     end_time = time.time()
-    print(f'Time of detecting is {end_time - start_time}')
-    class_ids, confidences, boxes = unwrap_detection(
-        yolov_image, predictions[0]
+    current_app.logger.debug(f'Time of detecting is {end_time - start_time}')
+
+    # Unwrap detection
+    class_ids, boxes, confidences = unwrap_detection(
+        _image, predictions[0], yolo_config_demo,
     )
 
+    annotation = from_yolo_dectection(
+        _image, yolo_config_demo, class_ids, boxes, confidences
+    )
+
+    # Render Detection
+    render_image = render_detection(
+        image, yolo_config_demo, class_ids, boxes, confidences
+    )
+
+    # Unfinished
+    def cv2_to_base64():
+        pass
+
+    return jsonify({
+        'anno': annotation.to_dict(),
+        'render': cv2_to_base64(render_image)
+    })
 
 
 def load_capture() -> np.ndarray:
     """Load video frames"""
     capture = cv2.VideoCapture("sample.mp4")
     return capture
+
 
 def build_model(weight: str, is_cuda: bool = False) -> Any:
     """Loading the YOLOv5 model
@@ -76,7 +103,8 @@ def build_model(weight: str, is_cuda: bool = False) -> Any:
         net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
     return net
 
-def detect(image: np.ndarray, net: Any) -> np.ndarray:
+
+def detect(image: np.ndarray, net: Any, config: dict) -> np.ndarray:
     """ Detect objects in the image
 
     resize to 640x640, normalize to [0, 1] and swap Red
@@ -86,11 +114,13 @@ def detect(image: np.ndarray, net: Any) -> np.ndarray:
     Args:
         image: an input normalized RBG image
         net: a onnx format yolov5 model
+        config: the project configs
 
     Returns:
         predictions: the model prediction
 
     """
+    INPUT_HEIGHT, INPUT_WIDTH = config.get('INPUT_SHAPE')[:2]
     blob = cv2.dnn.blobFromImage(
         image,
         1 / 255.0,
@@ -101,66 +131,6 @@ def detect(image: np.ndarray, net: Any) -> np.ndarray:
     net.setInput(blob)
     predictions = net.forward()
     return predictions
-
-
-def unwrap_detection(
-        image: np.ndarray,
-        detection: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """unwrap the yolov5 detections
-
-    YOLOv5's prediction is an an array with 25,200 positions
-    where each position is a 85-length 1D array. Each 1D array
-    holds the data of one detection. The 4 first positions of
-    this array are the xywh coordinates of the bound box rectangle.
-    The 5th position is the confidence level of that
-    detection. The 6th up to 85th elements are the scores
-    of each class (assuming an 80-class coco dataset )
-
-    Args:
-        image: the original BGR image
-        detection: the yolov5 model predictions,
-
-    Returns:
-        class_ids: a list of object class ID
-        confidences: a list of object confidence
-        boxes: a list of object bundling boxes
-    """
-    class_ids, confidences, boxes = [], [], []
-
-    height, width, _ = image.shape
-
-    x_factor = width / INPUT_WIDTH
-    y_factor = height / INPUT_HEIGHT
-
-    for row in detection:
-        confidence = row[4]
-        if confidence < 0.4:
-            continue
-
-        # min_val,max_val,min_indx,max_indx=cv2.minMaxLoc(a)
-        _, max_value, _, max_index = cv2.minMaxLoc(row[5:])
-        if max_value < 0.25:
-            continue
-        # print(f'row is {row}')
-        # print(f'max value is {max_value}')
-        # print(f'max index is {max_index}') # 不知道为什么 max_index 是一个包含两个元素的数组
-
-        confidences.append(confidence)
-        class_ids.append(max_index[1])
-        x, y, w, h = row[:4]
-        left = int((x - 0.5 * w) * x_factor)
-        top = int((y - 0.5 * h) * y_factor)
-        width = int(w * x_factor)
-        height = int(h * y_factor)
-        boxes.append([left, top, width, height])
-
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.45)
-    class_ids = np.asarray(class_ids)[indexes]
-    confidences = np.asarray(confidences)[indexes]
-    boxes = np.asarray(boxes)[indexes]
-
-    return class_ids, confidences, boxes
 
 
 def format_yolov5(image: np.ndarray) -> np.ndarray:
@@ -180,5 +150,118 @@ def format_yolov5(image: np.ndarray) -> np.ndarray:
     return resized
 
 
+def unwrap_detection(
+        image: np.ndarray,
+        detection: np.ndarray,
+        config: dict,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """unwrap the yolov5 detections
+
+    YOLOv5's prediction is an an array with 25,200 positions
+    where each position is a 85-length 1D array. Each 1D array
+    holds the data of one detection. The 4 first positions of
+    this array are the xywh coordinates of the bound box rectangle.
+    The 5th position is the confidence level of that
+    detection. The 6th up to 85th elements are the scores
+    of each class (assuming an 80-class coco dataset )
+
+    Args:
+        image: the original BGR image
+        detection: the yolov5 model predictions,
+        config: the project configs
+
+    Returns:
+        class_ids: a list of object class ID
+        confidences: a list of object confidence
+        boxes: a list of object bundling boxes, NOT NORMALIZED, FORMAT is XYXY - [left, top, right, bottom]
+    """
+    class_ids, confidences, boxes = [], [], []
+
+    height, width, _ = image.shape
+    INPUT_HEIGHT, INPUT_WIDTH = config.get('INPUT_SHAPE')[:2]
+
+    x_factor = width / INPUT_WIDTH
+    y_factor = height / INPUT_HEIGHT
+
+    for row in detection:
+        confidence = row[4]
+        if confidence < config.get('CONFIDENCE_THRESHOLD'):
+            continue
+
+        _, max_value, _, max_index = cv2.minMaxLoc(row[5:])
+        if max_value < config.get('SCORE_THRESHOLD'):
+            continue
+
+        confidences.append(confidence)
+        class_ids.append(max_index[1])
+        x, y, w, h = row[:4]
+        left = int((x - 0.5 * w) * x_factor)
+        top = int((y - 0.5 * h) * y_factor)
+        right = int((x + 0.5 * w) * x_factor)
+        bottom = int((y + 0.5 * h) * y_factor)
+        boxes.append([left, top, right, bottom])
+
+    indexes = cv2.dnn.NMSBoxes(
+        boxes,
+        confidences,
+        config.get('SCORE_THRESHOLD'),
+        config.get('NMS_THRESHOLD'),
+    )
+    class_ids = np.asarray(class_ids)[indexes]
+    confidences = np.asarray(confidences)[indexes]
+    boxes = np.asarray(boxes)[indexes]
+
+    return class_ids, boxes, confidences,
 
 
+def render_detection(
+        image: np.ndarray,
+        config: dict,
+        class_ids: np.ndarray,
+        boxes: np.ndarray,
+        confidences: np.ndarray,
+
+) -> np.ndarray:
+    """Render yolov5 detections
+
+    Args:
+        image: the original BGR image
+        config: the project configs
+        class_ids: a list of object class ID
+        boxes: a list of object bundling boxes, NOT NORMALIZED, FORMAT IS XYXYX
+        confidences: a list of object confidence
+
+    Returns:
+        _image: np.ndarray, a detection rendering image
+    """
+    assert len(class_ids) == len(boxes) == len(confidences)
+    COLORS = config.get('COLORS')
+    CLASSES = config.get('CLASSES')
+    _image = image.copy()
+
+    for (classid, confidence, box) in zip(class_ids, confidences, boxes):
+        color = COLORS[int(classid) % len(COLORS)]
+        cv2.rectangle(
+            _image,
+            box[:2],
+            box[2:],
+            color,
+            config.get('LINE_THICKNESS')
+        )  # bounding boxes
+        cv2.rectangle(
+            _image,
+            (box[0], box[1] - 20),
+            (box[2], box[1]),
+            color,
+            -1
+        )  # text background
+        cv2.putText(
+            _image,
+            f'{CLASSES[int(classid)]} - {100 * confidence:.1f}%',
+            (box[0], box[1] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+        )  # Text
+
+    return _image
